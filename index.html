@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<meta charset="utf-8"/>
+<title>Simple Green Field Analysis by Japan Prefecture</title>
+
+<!-- ---------- Style ---------- -->
+<style>
+html,body { margin:0; height:100%; font-family:sans-serif; overflow:hidden }
+#layout { display:flex; height:100% }
+#side { flex:0 0 360px; box-sizing:border-box; padding:1rem; overflow-y:auto; background:#fafafa }
+#map  { flex:1 1 auto }
+@media(max-width:750px) {
+  #layout { flex-direction:column }
+  #side   { width:100% }
+  #map    { height:60vh }
+}
+table     { border-collapse:collapse; width:100% }
+th,td     { border:1px solid #999; padding:.25rem .55rem; text-align:center; font-size:.8rem }
+th        { background:#eee }
+button    { margin:.6rem .25rem; padding:.45rem 1rem }
+#log      { margin:.5rem 0; font-weight:bold; color:#006 }
+
+/* ===== Spinner (added) ===== */
+.spinner {
+  display:none;
+  width:18px; height:18px;
+  border:3px solid #ddd;
+  border-top:3px solid #3498db;
+  border-radius:50%;
+  animation:spin 1s linear infinite;
+  vertical-align:middle;
+  margin-left:.5rem;
+}
+@keyframes spin { 0%{transform:rotate(0)} 100%{transform:rotate(360deg)} }
+</style>
+
+<!-- ---------- Layout ---------- -->
+<div id="layout">
+  <div id="side">
+    <h2>Simple GFA by Japan Pref</h2>
+
+    <label>Demand Sites 
+      <input id="numDem" type="number" min="1" max="46" value="20">
+      <button id="randSel">Random Select</button>
+    </label><br>
+
+    <label>Num of Whs
+      <input id="kFac" type="number" min="1" max="15" value="4">
+    </label>
+
+    <button id="solve" disabled>Optimize</button>
+    <button id="routeBtn" disabled>Search Routes</button>
+
+    <p>
+      <span id="log">⏳ Loading Optimizer…</span>
+      <span id="spin" class="spinner"></span>
+    </p>
+
+    <table id="prefTab"></table>
+  </div>
+  <div id="map"></div>
+</div>
+
+<!-- ---------- Libraries ---------- -->
+<link  href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" rel="stylesheet">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/highs@1.8.0/build/highs.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+
+<script>
+// Spinner on/off
+const spin = on => document.getElementById('spin').style.display = on ? 'inline-block' : 'none';
+
+/* ===== 46 Prefecture Capitals (excluding Okinawa) ===== */
+const capitals = [
+  ['北海道','札幌',43.064,141.346,0.403], ['青森','青森',40.824,140.740,0.066],
+  ['岩手','盛岡',39.703,141.153,0.075], ['宮城','仙台',38.268,140.869,0.231],
+  ['秋田','秋田',39.718,140.103,0.058], ['山形','山形',38.240,140.363,0.064],
+  ['福島','福島',37.750,140.467,0.132], ['茨城','水戸',36.341,140.446,0.202],
+  ['栃木','宇都宮',36.565,139.883,0.198], ['群馬','前橋',36.391,139.061,0.199],
+  ['埼玉','さいたま',35.857,139.648,0.721], ['千葉','千葉',35.605,140.123,0.624],
+  ['東京','東京',35.681,139.767,1.000],   ['神奈川','横浜',35.444,139.638,0.692],
+  ['新潟','新潟',37.902,139.023,0.215], ['富山','富山',36.695,137.213,0.086],
+  ['石川','金沢',36.594,136.625,0.112], ['福井','福井',36.064,136.219,0.070],
+  ['山梨','甲府',35.663,138.568,0.061], ['長野','長野',36.651,138.181,0.205],
+  ['岐阜','岐阜',35.423,136.760,0.200], ['静岡','静岡',34.976,138.383,0.364],
+  ['愛知','名古屋',35.170,136.881,0.743], ['三重','津',34.730,136.508,0.141],
+  ['滋賀','大津',35.004,135.868,0.141], ['京都','京都',35.021,135.755,0.271],
+  ['大阪','大阪',34.693,135.502,0.819], ['兵庫','神戸',34.690,135.195,0.437],
+  ['奈良','奈良',34.685,135.804,0.096], ['和歌山','和歌山',34.226,135.167,0.090],
+  ['鳥取','鳥取',35.503,134.237,0.052], ['島根','松江',35.468,133.050,0.063],
+  ['岡山','岡山',34.661,133.935,0.189], ['広島','広島',34.396,132.459,0.280],
+  ['山口','山口',34.186,131.471,0.113], ['徳島','徳島',34.067,134.559,0.074],
+  ['香川','高松',34.340,134.044,0.095], ['愛媛','松山',33.841,132.766,0.164],
+  ['高知','高知',33.559,133.531,0.066], ['福岡','福岡',33.590,130.401,0.504],
+  ['佐賀','佐賀',33.263,130.298,0.068], ['長崎','長崎',32.750,129.868,0.141],
+  ['熊本','熊本',32.789,130.741,0.177], ['大分','大分',33.239,131.612,0.112],
+  ['宮崎','宮崎',31.911,131.423,0.089], ['鹿児島','鹿児島',31.560,130.558,0.151]
+];
+
+/* ===== Haversine distance ===== */
+const R = 6371, toRad = Math.PI/180;
+const dkm = (a,b) => {
+  const [la1,lo1] = a, [la2,lo2] = b;
+  const dLa = (la2-la1)*toRad, dLo = (lo2-lo1)*toRad;
+  const s = Math.sin(dLa/2)**2 + Math.cos(la1*toRad)*Math.cos(la2*toRad)*Math.sin(dLo/2)**2;
+  return 2*R*Math.asin(Math.sqrt(s));
+};
+
+/* ===== Land polygon + 11 water masks ===== */
+const landPoly = {"type":"MultiPolygon","coordinates":[
+  [[[139,41.35],[146,41.35],[146,45.6],[139,45.6],[139,41.35]]],
+  [[[130,33.5],[142,33.5],[142,41.5],[130,41.5],[130,33.5]]],
+  [[[132.6,32.5],[134.8,32.5],[134.8,34.9],[132.6,34.9],[132.6,32.5]]],
+  [[[129.2,30.9],[131.9,30.9],[131.9,33.0],[129.2,33.0],[129.2,30.9]]]
+]};
+const waterMask = [
+  /* Set of bay polygons to exclude */
+  {type:'Polygon',coordinates:[[[131.0,33.3],[136.3,33.3],[136.3,34.9],[131.0,34.9],[131.0,33.3]]]}, // Seto Inland Sea
+  {type:'Polygon',coordinates:[[[134.8,34.1],[135.6,34.1],[135.6,34.9],[134.8,34.9],[134.8,34.1]]]}, // Osaka Bay
+  {type:'Polygon',coordinates:[[[136.5,34.2],[137.5,34.2],[137.5,35.1],[136.5,35.1],[136.5,34.2]]]}, // Ise Bay
+  {type:'Polygon',coordinates:[[[129.2,33.7],[130.8,33.7],[130.8,34.8],[129.2,34.8],[129.2,33.7]]]}, // Genkai Sea
+  {type:'Polygon',coordinates:[[[130.0,32.8],[131.3,32.8],[131.3,33.4],[130.0,33.4],[130.0,32.8]]]}, // Ariake Sea
+  {type:'Polygon',coordinates:[[[130.1,33.5],[130.7,33.5],[130.7,34.1],[130.1,34.1],[130.1,33.5]]]}, // Hakata Bay
+  {type:'Polygon',coordinates:[[[129.6,32.8],[130.1,32.8],[130.1,33.2],[129.6,33.2],[129.6,32.8]]]}, // Omura Bay
+  {type:'Polygon',coordinates:[[[130.1,32.0],[130.9,32.0],[130.9,32.7],[130.1,32.7],[130.1,32.0]]]}, // Yatsushiro Sea
+  {type:'Polygon',coordinates:[[[129.6,32.6],[130.3,32.6],[130.3,32.9],[129.6,32.9],[129.6,32.6]]]}, // Shimabara Bay
+  {type:'Polygon',coordinates:[[[130.4,31.2],[131.1,31.2],[131.1,31.7],[130.4,31.7],[130.4,31.2]]]}, // Kagoshima Bay
+  {type:'Polygon',coordinates:[[[139.3,35.3],[140.1,35.3],[140.1,35.9],[139.3,35.9],[139.3,35.3]]]}  // Tokyo Bay
+];
+
+/* ===== Point-in-Polygon Land Test ===== */
+function isLand(lat, lng) {
+  const p = turf.point([lng, lat]);
+  return turf.booleanPointInPolygon(p, landPoly)
+      && !waterMask.some(poly => turf.booleanPointInPolygon(p, poly));
+}
+
+/* ===== 0.2° Grid Candidates ===== */
+const cand = [];
+for (let lat=31; lat<=46; lat+=0.2) {
+  for (let lng=129; lng<=146; lng+=0.2) {
+    const pt = [lat+0.1, lng+0.1];
+    if (isLand(...pt)) cand.push(pt);
+  }
+}
+
+/* ===== DOM Element Bindings ===== */
+const prefTab  = document.getElementById('prefTab'),
+      numDem   = document.getElementById('numDem'),
+      randSel  = document.getElementById('randSel'),
+      kFac     = document.getElementById('kFac'),
+      solve    = document.getElementById('solve'),
+      routeBtn = document.getElementById('routeBtn'),
+      log       = document.getElementById('log');
+
+/* ===== Build Checkbox Table of Prefectures ===== */
+function buildTable(){
+  let h = '<tr><th>Demand</th><th>Prefecture</th><th>Population Ratio</th></tr>';
+  capitals.forEach((p,i)=> {
+    h += `<tr>
+      <td><input type="checkbox" data-idx="${i}"></td>
+      <td>${p[0]}</td>
+      <td>${p[4].toFixed(3)}</td>
+    </tr>`;
+  });
+  prefTab.innerHTML = h;
+}
+document.addEventListener('DOMContentLoaded', buildTable);
+
+/* ===== Read Selected Indices ===== */
+const selIdx = () =>
+  [...prefTab.querySelectorAll('input[type=checkbox]')]
+    .filter(c=>c.checked).map(c=>+c.dataset.idx);
+
+/* ===== Random Demand Selection ===== */
+randSel.onclick = () => {
+  const boxes = [...prefTab.querySelectorAll('input[type=checkbox]')];
+  boxes.forEach(x=>x.checked=false);
+  const n = Math.min(+numDem.value||1, boxes.length);
+  for (let i=boxes.length-1; i>0; i--){
+    const j = (Math.random()*(i+1))|0;
+    [boxes[i], boxes[j]] = [boxes[j], boxes[i]];
+  }
+  boxes.slice(0,n).forEach(x=>x.checked=true);
+};
+
+/* ===== Initialize Leaflet Map ===== */
+const map = L.map('map').setView([36.5,137],5.25);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+  attribution:'©OpenStreetMap'
+}).addTo(map);
+let demandMarks = [], facMarks = [], straightLayer=null, routeLayer=null;
+
+/* ===== HiGHS Optimizer Initialization ===== */
+let highs = null;
+(async ()=>{
+  let f = window.highs || window.highsWasm || window.Module;
+  if (f?.then) f = await f;
+  highs = await f({
+    locateFile: p => 'https://cdn.jsdelivr.net/npm/highs@1.8.0/build/'+p
+  });
+  spin(false);
+  log.textContent = '✅ Optimizer loaded — ready to optimize';
+  solve.disabled = false;
+})();
+
+/* ===== Sea-cell-to-Land Correction (BFS, ≈100km) ===== */
+function toLand(pt){
+  if (isLand(...pt)) return pt;
+  const STEP = 1/110,
+        DIR  = [[1,0],[-1,0],[0,1],[0,-1],[1,1],[-1,-1],[1,-1],[-1,1]];
+  const queue = [[...pt]];
+  const seen = new Set([pt.join()]);
+  while (queue.length){
+    const [la,lo] = queue.shift();
+    for (const [dx,dy] of DIR){
+      const p = [la+dx*STEP, lo+dy*STEP],
+            key = p.join();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (isLand(...p)) return p;
+      if (seen.size>12000) return pt;
+      queue.push(p);
+    }
+  }
+  return pt;
+}
+
+/* ===== Build LP Text ===== */
+function makeLP(dSel, k){
+  let lp = ['Minimize',' obj:'];
+  dSel.forEach((idx,i)=>{
+    cand.forEach((_,j)=>{
+      lp.push(` + ${(capitals[idx][4]*dkm(capitals[idx].slice(2,4),cand[j])).toFixed(2)} x_${i}_${j}`);
+    });
+  });
+  lp.push('\nSubject To');
+  dSel.forEach((_,i)=>{
+    lp.push(` d_${i}:`);
+    cand.forEach((_,j)=> lp.push(` x_${i}_${j}`));
+    lp.push(' = 1');
+  });
+  dSel.forEach((_,i)=>{
+    cand.forEach((_,j)=>{
+      lp.push(` l_${i}_${j}: x_${i}_${j} - y_${j} <= 0`);
+    });
+  });
+  lp.push(' k_con:');
+  cand.forEach((_,j)=> lp.push(` y_${j}`));
+  lp.push(` = ${k}`);
+  lp.push('\nBounds');
+  dSel.forEach((_,i)=>{
+    cand.forEach((_,j)=> lp.push(` 0 <= x_${i}_${j} <= 1`));
+  });
+  lp.push('\nBinary');
+  cand.forEach((_,j)=> lp.push(` y_${j}`));
+  lp.push('\nEnd');
+  return lp.join('\n');
+}
+
+/* ===== Clear Map Layers ===== */
+function clearMap(){
+  demandMarks.forEach(m=>m.remove());
+  facMarks.forEach(m=>m.remove());
+  demandMarks = facMarks = [];
+  straightLayer?.remove();
+  routeLayer?.remove();
+  straightLayer = routeLayer = null;
+}
+
+let assign = [];  // [ [demandIdx, warehouseIdx], … ]
+
+/* ===== Centroid Optimization Handler ===== */
+solve.onclick = async () => {
+  const dSel = selIdx();
+  if (!dSel.length) {
+    log.textContent = '⚠️ No demand sites selected';
+    return;
+  }
+  const k = Math.max(1, Math.min(+kFac.value||1, 15));
+
+  // show spinner & log
+  spin(true);
+  log.textContent = '⏳ Solving…';
+  solve.disabled = routeBtn.disabled = true;
+
+  // give browser a frame to update
+  await new Promise(r=>requestAnimationFrame(r));
+
+  // build LP & solve
+  const lpText = makeLP(dSel, k);
+  await new Promise(r=>setTimeout(r,0));
+  const res = highs.solve(lpText);
+  if (res.Status !== 'Optimal') {
+    spin(false);
+    log.textContent = '❌ No optimal solution';
+    solve.disabled = false;
+    return;
+  }
+
+  // extract chosen warehouses
+  const ySel = Object.entries(res.Columns)
+    .filter(([n,v])=>n.startsWith('y_') && v.Primal>0.5)
+    .map(([n])=>+n.split('_')[1]);
+
+  assign = dSel.map((d,i)=> {
+    const j = ySel.find(j=>res.Columns[`x_${i}_${j}`]?.Primal>0.5);
+    return [d,j];
+  });
+
+  // draw markers & lines
+  clearMap();
+  demandMarks = dSel.map(i =>
+    L.circleMarker(capitals[i].slice(2,4), {
+      radius: 4+capitals[i][4]*10, color:'#06f', fillOpacity:.75
+    })
+    .addTo(map)
+    .bindTooltip(capitals[i][1])
+  );
+  facMarks = ySel.map(j => {
+    cand[j] = toLand(cand[j]);
+    const [lat,lng] = cand[j];
+    return L.marker(cand[j])
+      .addTo(map)
+      .bindTooltip(`Whs:${lat.toFixed(3)}, ${lng.toFixed(3)}`);
+  });
+  straightLayer = L.layerGroup(assign.map(([d,j])=>
+    L.polyline([capitals[d].slice(2,4), cand[j]],{color:'#d52',weight:2})
+  )).addTo(map);
+
+  // done
+  spin(false);
+  log.textContent = `✅ Optimization completed (Whs ${ySel.length}/${k})`;
+  solve.disabled = routeBtn.disabled = false;
+};
+
+/* ===== Fetch Road Route via OSRM ===== */
+async function fetchRoute(a,b){
+  const url = `https://router.project-osrm.org/route/v1/driving/${a[1]},${a[0]};${b[1]},${b[0]}?overview=full&geometries=geojson`;
+  try {
+    const js = await (await fetch(url)).json();
+    if(js.code!=='Ok'||!js.routes?.length) throw 0;
+    return js.routes[0].geometry.coordinates.map(([lng,lat])=>[lat,lng]);
+  } catch {
+    return [a,b];
+  }
+}
+
+/* ===== Road Route Search Handler ===== */
+routeBtn.onclick = async () => {
+  routeLayer?.remove();
+  spin(true);
+  log.textContent = '⏳ Fetching routes…';
+  routeBtn.disabled = true;
+
+  const greens = [];
+  for (const [d,j] of assign) {
+    const path = await fetchRoute(capitals[d].slice(2,4), cand[j]);
+    greens.push(L.polyline(path, { color:'#0a0', weight:2, opacity:.9 }));
+  }
+  routeLayer = L.layerGroup(greens).addTo(map);
+
+  spin(false);
+  log.textContent = '✅ Road routes (green) rendered';
+  routeBtn.disabled = false;
+};
+</script>
