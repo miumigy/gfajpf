@@ -13,7 +13,7 @@ This is a browser-based, single-file application for **green field analysis** (G
 
 ## 🔧 Features
 
-- 📍 **Demand Sites**: Choose from all 46 prefectures
+- 📍 **Demand Sites**: Choose from 46 prefectures
 - ⚙️ **HiGHS Optimization**: Mixed Integer Programming (MIP) solving in-browser
 - 🗺 **Map Visualization**: Powered by [Leaflet](https://leafletjs.com)
 - 🚗 **Route Overlay**: Fetch real road paths using OSRM
